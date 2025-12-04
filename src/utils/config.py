@@ -31,4 +31,3 @@ CHECKPOINT_PATH = "checkpoints/weights.{epoch:02d}-{val_loss:.2f}.h5"
 RESULTS_PATH = "results/"
 
 
-

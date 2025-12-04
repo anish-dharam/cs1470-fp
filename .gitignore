@@ -28,12 +28,10 @@ wheels/
 *.ipynb
 
 # Model checkpoints and data
-models/
 checkpoints/
 *.h5
 *.ckpt
 *.pkl
-data/
 *.csv
 *.npy
 *.npz
@@ -52,4 +50,5 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
 
