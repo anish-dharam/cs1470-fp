@@ -4,8 +4,66 @@ Data preprocessing utilities for images and tabular data.
 
 import numpy as np
 import tensorflow as tf
+import pandas as pd
+import numpy as np
 from sklearn.preprocessing import StandardScaler
 
+
+def parse_volume(x):
+    """
+    Converts the volume data into numeric flots
+
+    Args:
+        x - data entry in volume column
+
+    Return:
+        the converted float value
+    """
+    if not isinstance(x, str):
+        return np.nan
+    
+    s = x.replace(',', '').strip()
+    if s == "":
+        return np.nan
+
+    multiplier = 1.0
+    if s.endswith("K"):
+        multiplier = 1e3
+        s = s[:-1]
+
+    try:
+        return float(s) * multiplier
+    except:
+        return np.nan
+
+
+def clean_wheat_csv(csv_path):
+    """
+    Cleans the historical price data csv
+
+    Args:
+        csv_path: path to the file
+
+    returns:
+        cleaned file
+
+    """
+    df = pd.read_csv(csv_path)
+
+    # helper function above^
+    df["Volume"] = df["Vol."].apply(parse_volume)
+
+    # remove % sign from values
+    df["Change %"] = (
+        df["Change %"]
+        .str.replace("%", "", regex=False)
+        .astype(float)
+    )
+
+    # drop rows with missing values
+    df = df.dropna(subset=["Price", "Open", "High", "Low", "Volume", "Change %"])
+
+    return df
 
 def preprocess_images(images, normalize=True):
     """

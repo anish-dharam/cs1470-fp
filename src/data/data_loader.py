@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from data_preprocessing import clean_wheat_csv
 
 from src.utils.config import (
     FORECAST_HORIZON,
@@ -146,6 +147,41 @@ def generate_dummy_futures_data(num_samples, num_features=NUM_PRICE_FEATURES):
         prices.append(price_features)
     
     return np.array(prices)
+
+def generate_futures_data(csv_path, num_samples, num_features=5):
+    """
+    Load real wheat futures data from cleaned CSV and return features in the
+    same format as generate_dummy_futures_data.
+
+    Args:
+        csv_path: Path to the raw CSV
+        num_samples: Number of samples requested
+        num_features: Number of features (must match model expectation)
+
+    Returns:
+        numpy array of shape (num_samples, num_features)
+    """
+    # get cleaned data
+    df = clean_wheat_csv(csv_path)
+
+    # generate values for 5 and 20 day averages
+    df["MA5"] = df["Price"].rolling(window=5).mean()
+    df["MA20"] = df["Price"].rolling(window=20).mean()
+
+    df = df.dropna(subset=["MA5", "MA20"]).reset_index(drop=True)
+
+    # keep relevant values
+    features = df[["Price", "Volume", "MA5", "MA20", "Change %"]].to_numpy(dtype=np.float32)
+
+    if len(features) >= num_samples:
+        features = features[-num_samples:]
+    else:
+        repeats = int(np.ceil(num_samples / len(features)))
+        features = np.tile(features, (repeats, 1))[:num_samples]
+
+    assert features.shape == (num_samples, num_features)
+
+    return features
 
 
 def generate_target_labels(futures_data, forecast_horizon=FORECAST_HORIZON):
