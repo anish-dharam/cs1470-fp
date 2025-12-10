@@ -8,7 +8,7 @@ import numpy as np
 
 def plot_training_history(history, save_path=None):
     """
-    Plot training and validation loss and accuracy curves.
+    Plot training and validation loss plus a secondary regression metric.
     
     Args:
         history: Keras training history object
@@ -25,14 +25,19 @@ def plot_training_history(history, save_path=None):
     axes[0].legend()
     axes[0].grid(True)
     
-    # Plot accuracy
-    axes[1].plot(history.history['accuracy'], label='Train Accuracy')
-    axes[1].plot(history.history['val_accuracy'], label='Val Accuracy')
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Accuracy')
-    axes[1].set_title('Model Accuracy')
-    axes[1].legend()
-    axes[1].grid(True)
+    metric_key = 'rmse' if 'rmse' in history.history else 'mae' if 'mae' in history.history else None
+    if metric_key:
+        val_key = f'val_{metric_key}'
+        axes[1].plot(history.history[metric_key], label=f'Train {metric_key.upper()}')
+        if val_key in history.history:
+            axes[1].plot(history.history[val_key], label=f'Val {metric_key.upper()}')
+        axes[1].set_xlabel('Epoch')
+        axes[1].set_ylabel(metric_key.upper())
+        axes[1].set_title(f'Model {metric_key.upper()}')
+        axes[1].legend()
+        axes[1].grid(True)
+    else:
+        axes[1].axis('off')
     
     plt.tight_layout()
     
@@ -46,38 +51,36 @@ def plot_training_history(history, save_path=None):
 
 def visualize_predictions(y_true, y_pred, num_samples=10, save_path=None):
     """
-    Visualize sample predictions vs actual labels.
+    Visualize regression predictions vs actuals.
     
     Args:
-        y_true: True binary labels
-        y_pred: Predicted probabilities
+        y_true: True values
+        y_pred: Predicted values
         num_samples: Number of samples to visualize
         save_path: Optional path to save the figure
     """
-    # Convert probabilities to binary predictions
-    y_pred_binary = (y_pred > 0.5).astype(int)
-    
-    # Select random samples
     indices = np.random.choice(len(y_true), min(num_samples, len(y_true)), replace=False)
+    y_true_sel = y_true[indices]
+    y_pred_sel = y_pred[indices]
     
     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
     
-    # Plot predictions
+    # Bar chart of sample predictions
     x = range(len(indices))
-    axes[0].bar([i - 0.2 for i in x], y_true[indices], width=0.4, label='True', alpha=0.7)
-    axes[0].bar([i + 0.2 for i in x], y_pred_binary[indices], width=0.4, label='Predicted', alpha=0.7)
+    axes[0].bar([i - 0.2 for i in x], y_true_sel, width=0.4, label='True', alpha=0.7)
+    axes[0].bar([i + 0.2 for i in x], y_pred_sel, width=0.4, label='Predicted', alpha=0.7)
     axes[0].set_xlabel('Sample Index')
-    axes[0].set_ylabel('Label (0=Down, 1=Up)')
-    axes[0].set_title('Binary Predictions vs True Labels')
+    axes[0].set_ylabel('Price')
+    axes[0].set_title('Predicted vs True Prices')
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
-    # Plot probabilities
-    axes[1].plot(x, y_pred[indices], 'o-', label='Predicted Probability', alpha=0.7)
-    axes[1].axhline(y=0.5, color='r', linestyle='--', label='Threshold')
-    axes[1].set_xlabel('Sample Index')
-    axes[1].set_ylabel('Probability')
-    axes[1].set_title('Prediction Probabilities')
+    # Scatter plot true vs predicted
+    axes[1].scatter(y_true, y_pred, alpha=0.6, label='Predictions')
+    axes[1].plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', label='Ideal')
+    axes[1].set_xlabel('True Price')
+    axes[1].set_ylabel('Predicted Price')
+    axes[1].set_title('True vs Predicted Scatter')
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
     
@@ -120,5 +123,7 @@ def plot_pnl(pnl_history, save_path=None):
         plt.show()
     
     plt.close()
+
+
 
 

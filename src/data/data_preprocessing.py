@@ -2,10 +2,11 @@
 Data preprocessing utilities for images and tabular data.
 """
 
+from datetime import datetime
+
 import numpy as np
 import tensorflow as tf
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import StandardScaler
 
 
@@ -28,6 +29,28 @@ def preprocess_images(images, normalize=True):
         images = np.clip(images, 0, 1)
     
     return images
+
+
+def clean_wheat_csv(csv_path):
+    """
+    Load and sanitize the wheat futures CSV.
+
+    - Parses dates in YYYY_MM_DD format
+    - Ensures numeric columns are float32
+    - Sorts chronologically
+    """
+    df = pd.read_csv(csv_path)
+    if 'Date' not in df.columns:
+        raise ValueError("CSV is missing required 'Date' column.")
+
+    df = df.rename(columns=lambda c: c.strip())
+    df['Date'] = pd.to_datetime(df['Date'], format="%Y_%m_%d")
+
+    numeric_cols = [c for c in df.columns if c != 'Date']
+    df[numeric_cols] = df[numeric_cols].astype(np.float32)
+
+    df = df.sort_values('Date').reset_index(drop=True)
+    return df
 
 
 def preprocess_tabular(tabular_data, scaler=None, fit=True):

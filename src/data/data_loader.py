@@ -1,288 +1,272 @@
 """
-Data loading module for satellite imagery, weather, and futures price data.
-Currently uses dummy data generation. Future integration with Earth Engine API.
+Data loading module that pairs MODIS imagery with wheat futures prices.
+- Parses cleaned CSV price data
+- Aligns each image date with price features as-of image date
+- Targets are prices 20 days in the future
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from data_preprocessing import clean_wheat_csv
+import tensorflow as tf
+import tifffile
+from sklearn.preprocessing import StandardScaler
 
+from src.data.data_preprocessing import clean_wheat_csv
 from src.utils.config import (
     FORECAST_HORIZON,
     IMAGE_CHANNELS,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
-    NUM_PRICE_FEATURES,
-    NUM_WEATHER_FEATURES,
 )
 
+DATA_DIR = Path(__file__).resolve().parent
+DEFAULT_PRICE_CSV = DATA_DIR / "futures_data" / "US_Wheat_Futures_cleaned_2023_2025.csv"
+DEFAULT_IMAGE_DIR = DATA_DIR / "modis_cnn_tifs"
+DATE_FMT = "%Y_%m_%d"
 
-def generate_dummy_satellite_data(num_samples, image_height=IMAGE_HEIGHT, 
-                                   image_width=IMAGE_WIDTH, 
-                                   image_channels=IMAGE_CHANNELS):
-    """
-    Generate dummy Landsat satellite imagery data.
-    
-    Args:
-        num_samples: Number of images to generate
-        image_height: Height of images
-        image_width: Width of images
-        image_channels: Number of channels (RGB)
-    
-    Returns:
-        numpy array of shape (num_samples, image_height, image_width, image_channels)
-    """
-    # Generat dummy images with some realistic patterns
-    # Simulate agricultural fields with varying greenness
-    np.random.seed(42)
-    images = []
-    
-    for i in range(num_samples):
-        # Base image with some structure (simulating fields)
-        img = np.random.rand(image_height, image_width, image_channels) * 0.3
-        
-        # Add some green channel bias (vegetation)
-        green_bias = np.random.rand() * 0.4 + 0.2
-        img[:, :, 1] += green_bias
-        
-        # Add some patterns to simulate field boundaries
-        for j in range(0, image_height, 20):
-            img[j:j+2, :, :] = 0.1  # Horizontal lines
-        for k in range(0, image_width, 20):
-            img[:, k:k+2, :] = 0.1  # Vertical lines
-        
-        # Add noise
-        noise = np.random.normal(0, 0.05, (image_height, image_width, image_channels))
-        img = np.clip(img + noise, 0, 1)
-        
-        images.append(img)
-    
-    return np.array(images)
+# Price features we keep for the tabular branch
+PRICE_FEATURE_COLUMNS = [
+    "Price",
+    "Open",
+    "High",
+    "Low",
+    "Volume",
+    "ChangePct",
+    "MA5",
+    "MA20",
+]
 
 
-def generate_dummy_weather_data(num_samples, num_features=NUM_WEATHER_FEATURES):
-    """
-    Generate dummy weather features.
-    
-    Args:
-        num_samples: Number of samples
-        num_features: Number of weather features
-    
-    Returns:
-        numpy array of shape (num_samples, num_features)
-    """
-    np.random.seed(42)
-    
-    # Generate realistic weather data
-    weather_data = np.zeros((num_samples, num_features))
-    
-    for i in range(num_samples):
-        # Cloud cover (0-1)
-        weather_data[i, 0] = np.random.beta(2, 5)
-        
-        # Sun elevation (degrees, 0-90)
-        weather_data[i, 1] = np.random.uniform(20, 70)
-        
-        # Sun azimuth (degrees, 0-360)
-        weather_data[i, 2] = np.random.uniform(0, 360)
-        
-        # Temperature (Celsius, -10 to 35)
-        weather_data[i, 3] = np.random.normal(15, 10)
-        
-        # Precipitation (mm, 0-50)
-        weather_data[i, 4] = np.random.exponential(5)
-        
-        # Humidity (0-100%)
-        weather_data[i, 5] = np.random.uniform(30, 90)
-        
-        # Wind speed (m/s, 0-20)
-        weather_data[i, 6] = np.random.exponential(3)
-        
-        # Pressure (hPa, 980-1020)
-        weather_data[i, 7] = np.random.normal(1013, 10)
-        
-        # Solar radiation (W/m^2, 0-1000)
-        weather_data[i, 8] = np.random.uniform(0, 800)
-        
-        # Visibility (km, 0-50)
-        weather_data[i, 9] = np.random.uniform(5, 50)
-    
-    return weather_data
+@dataclass
+class Sample:
+    date: datetime
+    image: np.ndarray
+    tabular: np.ndarray
+    target: float
 
 
-def generate_dummy_futures_data(num_samples, num_features=NUM_PRICE_FEATURES):
-    """
-    Generate dummy wheat futures price data.
-    
-    Args:
-        num_samples: Number of samples
-        num_features: Number of price features
-    
-    Returns:
-        numpy array of shape (num_samples, num_features)
-    """
-    np.random.seed(42)
-    
-    # Generate realistic price data with some trend
-    base_price = 600.0  # Base wheat futures price in USD/bushel
-    prices = []
-    
-    current_price = base_price
-    for i in range(num_samples):
-        # Random walk with slight upward bias
-        change = np.random.normal(0.1, 2.0)
-        current_price = max(400, min(800, current_price + change))
-        
-        # Create features: price, volume, moving averages
-        price_features = np.zeros(num_features)
-        price_features[0] = current_price
-        price_features[1] = np.random.uniform(1000, 10000)  # Volume
-        price_features[2] = current_price + np.random.normal(0, 1)  # MA5
-        price_features[3] = current_price + np.random.normal(0, 2)  # MA20
-        price_features[4] = np.random.uniform(-0.05, 0.05)  # Price change %
-        
-        prices.append(price_features)
-    
-    return np.array(prices)
+def _normalize_change_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure Change % column is numeric."""
+    if "Change %" in df.columns:
+        df["ChangePct"] = (
+            df["Change %"]
+            .astype(str)
+            .str.replace("%", "", regex=False)
+            .astype(float)
+        )
+    elif "ChangePct" not in df.columns:
+        df["ChangePct"] = np.nan
+    return df
 
-def generate_futures_data(csv_path, num_samples, num_features=5):
-    """
-    Load real wheat futures data from cleaned CSV and return features in the
-    same format as generate_dummy_futures_data.
 
-    Args:
-        csv_path: Path to the raw CSV
-        num_samples: Number of samples requested
-        num_features: Number of features (must match model expectation)
+def _compute_price_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add rolling features without leakage."""
+    df = _normalize_change_column(df)
+    df["MA5"] = df["Price"].rolling(window=5, min_periods=3).mean()
+    df["MA20"] = df["Price"].rolling(window=20, min_periods=5).mean()
+    return df
 
-    Returns:
-        numpy array of shape (num_samples, num_features)
-    """
-    # get cleaned data
+
+def load_price_dataframe(csv_path: Path = DEFAULT_PRICE_CSV) -> pd.DataFrame:
+    """Load, clean, and enrich the price dataframe."""
     df = clean_wheat_csv(csv_path)
+    df = _compute_price_features(df)
+    return df
 
-    # generate values for 5 and 20 day averages
-    df["MA5"] = df["Price"].rolling(window=5).mean()
-    df["MA20"] = df["Price"].rolling(window=20).mean()
 
-    df = df.dropna(subset=["MA5", "MA20"]).reset_index(drop=True)
+def _extract_date_from_filename(path: Path) -> datetime:
+    return datetime.strptime(path.stem, DATE_FMT)
 
-    # keep relevant values
-    features = df[["Price", "Volume", "MA5", "MA20", "Change %"]].to_numpy(dtype=np.float32)
 
-    if len(features) >= num_samples:
-        features = features[-num_samples:]
+def _latest_price_features_before(
+    price_df: pd.DataFrame, anchor_date: datetime, feature_cols: Sequence[str]
+) -> Optional[np.ndarray]:
+    """Get latest available price features on or before anchor_date."""
+    mask = price_df["Date"] <= anchor_date
+    if not mask.any():
+        return None
+    row = price_df.loc[mask].iloc[-1]
+    features = row[list(feature_cols)]
+    if features.isna().any():
+        return None
+    return features.to_numpy(dtype=np.float32)
+
+
+def _future_price(
+    price_df: pd.DataFrame, anchor_date: datetime, horizon_days: int
+) -> Optional[float]:
+    """Price at the first available date on/after anchor_date + horizon."""
+    target_date = anchor_date + timedelta(days=horizon_days)
+    future_rows = price_df[price_df["Date"] >= target_date]
+    if future_rows.empty:
+        return None
+    return float(future_rows.iloc[0]["Price"])
+
+
+def _resize_and_normalize_image(image: np.ndarray) -> np.ndarray:
+    """Resize to config dims and min-max normalize per image."""
+    image = image.astype(np.float32)
+    # Replace NaNs
+    if np.isnan(image).any():
+        image = np.nan_to_num(image, nan=0.0)
+
+    # Per-image robust min-max (2-98 percentile)
+    lo, hi = np.percentile(image, [2, 98])
+    if hi > lo:
+        image = np.clip((image - lo) / (hi - lo), 0.0, 1.0)
     else:
-        repeats = int(np.ceil(num_samples / len(features)))
-        features = np.tile(features, (repeats, 1))[:num_samples]
+        image = np.zeros_like(image, dtype=np.float32)
 
-    assert features.shape == (num_samples, num_features)
-
-    return features
-
-
-def generate_target_labels(futures_data, forecast_horizon=FORECAST_HORIZON):
-    """
-    Generate binary target labels (price direction 20 days ahead).
-    
-    Args:
-        futures_data: Array of futures price data
-        forecast_horizon: Number of days ahead to predict
-    
-    Returns:
-        numpy array of binary labels (0=down, 1=up)
-    """
-    labels = []
-    
-    for i in range(len(futures_data) - forecast_horizon):
-        current_price = futures_data[i, 0]
-        future_price = futures_data[i + forecast_horizon, 0]
-        
-        # Binary classification: 1 if price goes up, 0 if down
-        label = 1 if future_price > current_price else 0
-        labels.append(label)
-    
-    # Pad the last few samples with zeros (can't predict future)
-    labels.extend([0] * forecast_horizon)
-    
-    return np.array(labels)
+    image_tf = tf.convert_to_tensor(image)
+    image_tf = tf.image.resize(image_tf, (IMAGE_HEIGHT, IMAGE_WIDTH))
+    return image_tf.numpy().astype(np.float32)
 
 
-def fetch_earth_engine_data(region, start_date, end_date):
-    """
-    Placeholder function for future Earth Engine API integration.
-    
-    Args:
-        region: Region of interest (bounding box)
-        start_date: Start date for data collection
-        end_date: End date for data collection
-    
-    Returns:
-        Tuple of (satellite_images, weather_data, futures_data)
-    """
-    # TODO: Implement Earth Engine API integration
-    # This will replace dummy data generation in the future
-    pass
+def load_modis_image(
+    image_path: Path,
+    target_size: Tuple[int, int] = (IMAGE_HEIGHT, IMAGE_WIDTH),
+    num_channels: int = IMAGE_CHANNELS,
+) -> np.ndarray:
+    """Load a MODIS .tif, trim/pad channels, resize, and normalize."""
+    arr = tifffile.imread(str(image_path))
+
+    if arr.ndim == 2:
+        arr = np.expand_dims(arr, axis=-1)
+
+    if arr.shape[-1] > num_channels:
+        arr = arr[..., :num_channels]
+    elif arr.shape[-1] < num_channels:
+        # Repeat last channel to reach desired count
+        repeats = num_channels // arr.shape[-1] + 1
+        arr = np.repeat(arr, repeats=repeats, axis=-1)[..., :num_channels]
+
+    arr = _resize_and_normalize_image(arr)
+    return arr
 
 
-def load_data(num_samples=1000, test_size=0.15, val_size=0.15, random_state=42):
-    """
-    Main function to load and split data into train/val/test sets.
-    
-    Args:
-        num_samples: Total number of samples to generate
-        test_size: Proportion of data for testing
-        val_size: Proportion of data for validation (from remaining after test split)
-        random_state: Random seed
-    
-    Returns:
-        Tuple of (X_train, X_val, X_test, y_train, y_val, y_test)
-        where X is a dict with keys 'images' and 'tabular'
-    """
-    # Generat dummy data
-    print("Generating dummy satellite data...")
-    satellite_images = generate_dummy_satellite_data(num_samples)
-    
-    print("Generating dummy weather data...")
-    weather_data = generate_dummy_weather_data(num_samples)
-    
-    print("Generating dummy futures data...")
-    futures_data = generate_dummy_futures_data(num_samples)
-    
-    # Combin weather and price features
-    tabular_data = np.concatenate([weather_data, futures_data], axis=1)
-    
-    # Generat target labels
-    print("Generating target labels...")
-    labels = generate_target_labels(futures_data)
-    
-    # Align data (remove last FORECAST_HORIZON samples that don't have labels)
-    satellite_images = satellite_images[:-FORECAST_HORIZON]
-    tabular_data = tabular_data[:-FORECAST_HORIZON]
-    labels = labels[:-FORECAST_HORIZON]
-    
-    # Split into train/test first
-    X_img_train, X_img_test, X_tab_train, X_tab_test, y_train, y_test = train_test_split(
-        satellite_images, tabular_data, labels,
-        test_size=test_size, random_state=random_state, stratify=labels
+def _build_samples(
+    image_dir: Path,
+    price_df: pd.DataFrame,
+    horizon_days: int,
+    feature_cols: Sequence[str],
+) -> List[Sample]:
+    samples: List[Sample] = []
+    for tif_path in sorted(image_dir.glob("*.tif")):
+        try:
+            img_date = _extract_date_from_filename(tif_path)
+        except ValueError:
+            continue
+
+        tabular = _latest_price_features_before(price_df, img_date, feature_cols)
+        target_price = _future_price(price_df, img_date, horizon_days)
+
+        if tabular is None or target_price is None:
+            continue
+
+        image = load_modis_image(tif_path)
+        samples.append(
+            Sample(
+                date=img_date,
+                image=image,
+                tabular=tabular,
+                target=target_price,
+            )
+        )
+    return samples
+
+
+def _to_arrays(
+    samples: Iterable[Sample],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[datetime]]:
+    images, tabular, targets, dates = [], [], [], []
+    for s in samples:
+        images.append(s.image)
+        tabular.append(s.tabular)
+        targets.append(s.target)
+        dates.append(s.date)
+    return (
+        np.stack(images).astype(np.float32),
+        np.stack(tabular).astype(np.float32),
+        np.array(targets, dtype=np.float32),
+        dates,
     )
-    
-    # Split train into train/val
-    val_size_adjusted = val_size / (1 - test_size)
-    X_img_train, X_img_val, X_tab_train, X_tab_val, y_train, y_val = train_test_split(
-        X_img_train, X_tab_train, y_train,
-        test_size=val_size_adjusted, random_state=random_state, stratify=y_train
-    )
-    
-    # Package data
-    X_train = {'images': X_img_train, 'tabular': X_tab_train}
-    X_val = {'images': X_img_val, 'tabular': X_tab_val}
-    X_test = {'images': X_img_test, 'tabular': X_tab_test}
-    
-    print(f"Data loaded: Train={len(y_train)}, Val={len(y_val)}, Test={len(y_test)}")
-    
-    return X_train, X_val, X_test, y_train, y_val, y_test
 
+
+def _split_by_year(
+    samples: List[Sample],
+    train_years: Sequence[int] = (2023,),
+    val_years: Sequence[int] = (2024,),
+    test_years: Sequence[int] = (2025,),
+):
+    train = [s for s in samples if s.date.year in train_years]
+    val = [s for s in samples if s.date.year in val_years]
+    test = [s for s in samples if s.date.year in test_years]
+    return train, val, test
+
+
+def load_data(
+    price_csv: Path = DEFAULT_PRICE_CSV,
+    image_dir: Path = DEFAULT_IMAGE_DIR,
+    horizon_days: int = FORECAST_HORIZON,
+    feature_cols: Sequence[str] = PRICE_FEATURE_COLUMNS,
+    train_years: Sequence[int] = (2023,),
+    val_years: Sequence[int] = (2024,),
+    test_years: Sequence[int] = (2025,),
+    tabular_scaler: Optional[StandardScaler] = None,
+) -> Tuple[
+    Dict[str, np.ndarray],
+    Dict[str, np.ndarray],
+    Dict[str, np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    StandardScaler,
+]:
+    """
+    Load aligned image/price data and split by year.
+
+    Returns:
+        X_train, X_val, X_test dicts with 'images' and 'tabular'
+        y_train, y_val, y_test numpy arrays (target prices)
+        fitted StandardScaler for tabular features
+    """
+    price_df = load_price_dataframe(Path(price_csv))
+    samples = _build_samples(Path(image_dir), price_df, horizon_days, feature_cols)
+
+    if not samples:
+        raise ValueError(
+            "No aligned samples found. Check image dates and price CSV coverage."
+        )
+
+    train_s, val_s, test_s = _split_by_year(
+        samples, train_years, val_years, test_years
+    )
+
+    if not train_s or not val_s or not test_s:
+        raise ValueError(
+            "Insufficient samples per split: "
+            f"train={len(train_s)}, val={len(val_s)}, test={len(test_s)}"
+        )
+
+    X_img_train, X_tab_train, y_train, _ = _to_arrays(train_s)
+    X_img_val, X_tab_val, y_val, _ = _to_arrays(val_s)
+    X_img_test, X_tab_test, y_test, _ = _to_arrays(test_s)
+
+    scaler = tabular_scaler or StandardScaler()
+    if tabular_scaler is None:
+        X_tab_train = scaler.fit_transform(X_tab_train)
+    else:
+        X_tab_train = scaler.transform(X_tab_train)
+    X_tab_val = scaler.transform(X_tab_val)
+    X_tab_test = scaler.transform(X_tab_test)
+
+    X_train = {"images": X_img_train, "tabular": X_tab_train}
+    X_val = {"images": X_img_val, "tabular": X_tab_val}
+    X_test = {"images": X_img_test, "tabular": X_tab_test}
+
+    return X_train, X_val, X_test, y_train, y_val, y_test, scaler

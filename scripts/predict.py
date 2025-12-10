@@ -4,16 +4,22 @@ Prediction script for making forecasts on new data.
 
 import os
 import sys
+from pathlib import Path
+
+import joblib
 import numpy as np
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.data.data_loader import generate_dummy_satellite_data, generate_dummy_weather_data, generate_dummy_futures_data
-from src.data.data_preprocessing import preprocess_images, preprocess_tabular
+from src.data.data_loader import load_data
 from src.models.combined_model import create_combined_model
 from src.training.trainer import Trainer
-from src.utils.config import MODEL_SAVE_PATH, NUM_WEATHER_FEATURES, NUM_PRICE_FEATURES
+from src.utils.config import (
+    MODEL_SAVE_PATH,
+    TABULAR_SCALER_PATH,
+    TARGET_SCALER_PATH,
+)
 
 
 def load_model_for_prediction(model_path=MODEL_SAVE_PATH):
@@ -38,7 +44,7 @@ def load_model_for_prediction(model_path=MODEL_SAVE_PATH):
 
 def predict_on_new_data(model_path=MODEL_SAVE_PATH, num_samples=10):
     """
-    Make predictions on new dummy data (for demonstration).
+    Make predictions on held-out test data.
     
     Args:
         model_path: Path to saved model
@@ -52,49 +58,49 @@ def predict_on_new_data(model_path=MODEL_SAVE_PATH, num_samples=10):
     print("\nLoading trained model...")
     trainer = load_model_for_prediction(model_path)
     
-    # Generate new dummy data
-    print(f"\nGenerating {num_samples} new samples...")
-    new_images = generate_dummy_satellite_data(num_samples)
-    new_weather = generate_dummy_weather_data(num_samples)
-    new_prices = generate_dummy_futures_data(num_samples)
-    
-    # Preprocess data
-    print("Preprocessing data...")
-    new_images = preprocess_images(new_images)
-    new_tabular = np.concatenate([new_weather, new_prices], axis=1)
-    
-    # Note: In real usage, you'd load a fitted scaler from training
-    # For now, we'll create a dummy scaler (not ideal, but works for demo)
-    new_tabular, _ = preprocess_tabular(new_tabular, fit=True)
-    
-    # Prepare data dict
+    print("\nLoading dataset (test split) with saved scalers...")
+    if not Path(TABULAR_SCALER_PATH).exists() or not Path(TARGET_SCALER_PATH).exists():
+        raise FileNotFoundError(
+            "Saved scalers not found. Please run training first to generate "
+            f"{TABULAR_SCALER_PATH} and {TARGET_SCALER_PATH}."
+        )
+    tabular_scaler = joblib.load(TABULAR_SCALER_PATH)
+    target_scaler = joblib.load(TARGET_SCALER_PATH)
+
+    _, _, X_test, _, _, y_test, _ = load_data(tabular_scaler=tabular_scaler)
+    y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).flatten()
     X_new = {
-        'images': new_images,
-        'tabular': new_tabular
+        'images': X_test['images'][:num_samples],
+        'tabular': X_test['tabular'][:num_samples],
     }
+    y_true = target_scaler.inverse_transform(
+        y_test_scaled[:num_samples].reshape(-1, 1)
+    ).flatten()
     
     # Make predictions
     print("Making predictions...")
-    predictions = trainer.predict(X_new)
-    predictions_binary = (predictions >= 0.5).astype(int)
+    predictions = trainer.predict(X_new).flatten()
+    predictions = target_scaler.inverse_transform(predictions.reshape(-1, 1)).flatten()
     
     # Display results
     print("\n" + "=" * 60)
     print("Predictions:")
     print("=" * 60)
-    print(f"{'Sample':<10} {'Probability':<15} {'Prediction':<15} {'Direction':<15}")
+    print(f"{'Sample':<10} {'Predicted':<15} {'Actual':<15} {'Error':<15}")
     print("-" * 60)
     
     for i in range(num_samples):
-        prob = predictions[i][0]
-        pred = predictions_binary[i][0]
-        direction = "UP" if pred == 1 else "DOWN"
-        print(f"{i+1:<10} {prob:.4f}         {pred:<15} {direction:<15}")
+        pred = predictions[i]
+        actual = y_true[i]
+        error = pred - actual
+        print(f"{i+1:<10} {pred:>10.2f}     {actual:>10.2f}     {error:>10.2f}")
     
     print("=" * 60)
     print(f"\nSummary:")
-    print(f"  Samples predicted UP: {np.sum(predictions_binary == 1)}")
-    print(f"  Samples predicted DOWN: {np.sum(predictions_binary == 0)}")
+    mae = np.mean(np.abs(predictions - y_true))
+    rmse = np.sqrt(np.mean((predictions - y_true) ** 2))
+    print(f"  MAE: {mae:.2f}")
+    print(f"  RMSE: {rmse:.2f}")
     print("=" * 60)
 
 
@@ -115,5 +121,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 

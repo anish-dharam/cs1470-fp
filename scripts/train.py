@@ -4,30 +4,28 @@ Main training script for wheat futures forecasting model.
 
 import os
 import sys
+from pathlib import Path
 
+import joblib
 import numpy as np
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.data.data_loader import load_data
-from src.data.data_preprocessing import preprocess_images, preprocess_tabular
 from src.models.combined_model import create_combined_model
-from src.training.metrics import evaluate_model
+from src.training.metrics import evaluate_regression
 from src.training.trainer import Trainer
 from src.utils.config import (
     BATCH_SIZE,
     EPOCHS,
     LEARNING_RATE,
     MODEL_SAVE_PATH,
-    NUM_PRICE_FEATURES,
     RESULTS_PATH,
+    TABULAR_SCALER_PATH,
+    TARGET_SCALER_PATH,
 )
-from src.utils.visualization import (
-    plot_pnl,
-    plot_training_history,
-    visualize_predictions,
-)
+from src.utils.visualization import plot_training_history, visualize_predictions
 
 
 def main():
@@ -36,40 +34,35 @@ def main():
     print("Wheat Futures Forecasting - Training Script")
     print("=" * 60)
     
-    # load and preproces data
-    print("\n[1/5] Loading data...")
-    X_train, X_val, X_test, y_train, y_val, y_test = load_data(
-        num_samples=1000,
-        test_size=0.15,
-        val_size=0.15,
-        random_state=42
-    )
-    
-    # preprocess images
-    print("\n[2/5] Preprocessing images...")
-    X_train['images'] = preprocess_images(X_train['images'])
-    X_val['images'] = preprocess_images(X_val['images'])
-    X_test['images'] = preprocess_images(X_test['images'])
-    
-    # preprocess tabular data
-    print("\n[3/5] Preprocessing tabular data...")
-    X_train['tabular'], scaler = preprocess_tabular(X_train['tabular'], fit=True)
-    X_val['tabular'], _ = preprocess_tabular(X_val['tabular'], scaler=scaler, fit=False)
-    X_test['tabular'], _ = preprocess_tabular(X_test['tabular'], scaler=scaler, fit=False)
+    # load data
+    print("\n[1/4] Loading data...")
+    X_train, X_val, X_test, y_train, y_val, y_test, scaler = load_data()
+
+    # scale targets for stability
+    from sklearn.preprocessing import StandardScaler
+    target_scaler = StandardScaler()
+    y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
+    y_val_scaled = target_scaler.transform(y_val.reshape(-1, 1)).flatten()
+    y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).flatten()
+    Path(MODEL_SAVE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(TABULAR_SCALER_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(TARGET_SCALER_PATH).parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(scaler, TABULAR_SCALER_PATH)
+    joblib.dump(target_scaler, TARGET_SCALER_PATH)
     
     # create model
-    print("\n[4/5] Creating model...")
-    model = create_combined_model()
+    print("\n[2/4] Creating model...")
+    model = create_combined_model(tabular_dim=X_train['tabular'].shape[1])
     model.summary()
     
     # create trainer
     trainer = Trainer(model, learning_rate=LEARNING_RATE)
     
-    # train model j
-    print("\n[5/5] Training model...")
+    # train model 
+    print("\n[3/4] Training model...")
     history = trainer.train(
-        X_train, y_train,
-        X_val, y_val,
+        X_train, y_train_scaled,
+        X_val, y_val_scaled,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
         verbose=1
@@ -78,20 +71,23 @@ def main():
     print("\nSaving model...")
     trainer.save_model(MODEL_SAVE_PATH)
     
-    print("\nEvaluating on test set...")
-    prices_test = X_test['tabular'][:, -NUM_PRICE_FEATURES:]  # Last features are price features
+    # summarize train/val at best val_loss epoch
+    best_idx = int(np.argmin(history.history['val_loss']))
+    print("\nValidation summary (best epoch):")
+    print(f"  Epoch: {best_idx + 1}")
+    print(f"  Train Loss: {history.history['loss'][best_idx]:.4f}")
+    print(f"  Train MAE : {history.history['mae'][best_idx]:.4f}")
+    print(f"  Train RMSE: {history.history['rmse'][best_idx]:.4f}")
+    print(f"  Val Loss  : {history.history['val_loss'][best_idx]:.4f}")
+    print(f"  Val MAE   : {history.history['val_mae'][best_idx]:.4f}")
+    print(f"  Val RMSE  : {history.history['val_rmse'][best_idx]:.4f}")
     
-    metrics = evaluate_model(
-        model,
-        X_test,
-        y_test,
-        prices_test=prices_test,
-        threshold=0.5
-    )
+    print("\nEvaluating on test set (unscaled targets)...")
+    metrics = evaluate_regression(model, X_test, y_test_scaled, target_scaler=target_scaler)
     
-    print(f"\nTest Accuracy: {metrics['accuracy']:.4f}")
-    if 'final_pnl' in metrics:
-        print(f"Final PNL: ${metrics['final_pnl']:.2f}")
+    print(f"  Test MAE : {metrics['mae']:.4f}")
+    print(f"  Test RMSE: {metrics['rmse']:.4f}")
+    print(f"  Test MAPE: {metrics['mape']:.2f}%")
     
     os.makedirs(RESULTS_PATH, exist_ok=True)
     
@@ -102,8 +98,6 @@ def main():
         y_test, metrics['predictions'],
         save_path=os.path.join(RESULTS_PATH, 'predictions.png')
     )
-    if 'pnl_history' in metrics:
-        plot_pnl(metrics['pnl_history'], save_path=os.path.join(RESULTS_PATH, 'pnl.png'))
     
     print("\n" + "=" * 60)
     print("Training completed!")

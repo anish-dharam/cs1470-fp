@@ -3,13 +3,17 @@ Training utilities for the combined model.
 """
 
 import os
+
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.callbacks import (
-    EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-)
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+
 from src.utils.config import (
-    LEARNING_RATE, EPOCHS, MODEL_SAVE_PATH, CHECKPOINT_PATH
+    CHECKPOINT_PATH,
+    EPOCHS,
+    LEARNING_RATE,
+    MODEL_SAVE_PATH,
+    WEIGHT_DECAY,
 )
 
 
@@ -30,16 +34,22 @@ class Trainer:
         self.learning_rate = learning_rate
         self.history = None
         
-        # Compile model
         self._compile_model()
     
     def _compile_model(self):
-        """Compile the model with optimizer and loss function."""
-        optimizer = keras.optimizers.Adam(learning_rate=self.learning_rate)
+        """Compile the model with optimizer and loss function (regression)."""
+        optimizer = keras.optimizers.AdamW(
+            learning_rate=self.learning_rate,
+            weight_decay=WEIGHT_DECAY,
+            clipnorm=1.0,
+        )
         self.model.compile(
             optimizer=optimizer,
-            loss='binary_crossentropy',
-            metrics=['accuracy']
+            loss=keras.losses.Huber(),
+            metrics=[
+                keras.metrics.MeanAbsoluteError(name="mae"),
+                keras.metrics.RootMeanSquaredError(name="rmse"),
+            ],
         )
     
     def train(self, X_train, y_train, X_val, y_val, 
@@ -61,11 +71,9 @@ class Trainer:
         Returns:
             Training history
         """
-        # Creat default callbacks if not provided
         if callbacks is None:
             callbacks = self._create_default_callbacks()
         
-        # Trainn model
         self.history = self.model.fit(
             [X_train['images'], X_train['tabular']],
             y_train,
@@ -88,7 +96,7 @@ class Trainer:
             # Early stopping to prevent overfitting
             EarlyStopping(
                 monitor='val_loss',
-                patience=10,
+                patience=8,
                 restore_best_weights=True,
                 verbose=1
             ),
@@ -103,8 +111,8 @@ class Trainer:
             # Reduce learning rate on plateau
             ReduceLROnPlateau(
                 monitor='val_loss',
-                factor=0.5,
-                patience=5,
+                factor=0.3,
+                patience=4,
                 min_lr=1e-7,
                 verbose=1
             )
@@ -142,7 +150,7 @@ class Trainer:
             X: Data dict with 'images' and 'tabular' keys
         
         Returns:
-            Predictions (probabilities)
+            Predictions (prices)
         """
         return self.model.predict([X['images'], X['tabular']], verbose=0)
 

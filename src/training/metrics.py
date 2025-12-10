@@ -3,7 +3,13 @@ Evaluation metrics for the wheat futures forecasting model.
 """
 
 import numpy as np
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    mean_absolute_error,
+    mean_squared_error,
+)
 
 
 def calculate_accuracy(y_true, y_pred, threshold=0.5):
@@ -43,6 +49,7 @@ def calculate_pnl(y_true, y_pred, prices, threshold=0.5, initial_capital=10000):
     pnl = []
     capital = initial_capital
     position = 0  # 0 = no position, 1 = long, -1 = short
+    entry_price = None
     
     for i in range(len(y_true)):
         current_price = prices[i, 0] if len(prices.shape) > 1 else prices[i]
@@ -138,5 +145,34 @@ def evaluate_model(model, X_test, y_test, prices_test=None, threshold=0.5):
     )
     
     return metrics
+
+
+def evaluate_regression(model, X_test, y_test, target_scaler=None):
+    """
+    Evaluate regression performance (price prediction).
+
+    Returns:
+        dict with mae, rmse, mape, predictions
+    """
+    preds = model.predict([X_test['images'], X_test['tabular']], verbose=0).flatten()
+    y_true = y_test
+
+    if target_scaler is not None:
+        preds = target_scaler.inverse_transform(preds.reshape(-1, 1)).flatten()
+        y_true = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+
+    mae = mean_absolute_error(y_true, preds)
+    rmse = mean_squared_error(y_true, preds, squared=False)
+    mape = np.mean(np.abs((y_true - preds) / np.clip(np.abs(y_true), 1e-6, None))) * 100
+
+    return {
+        "mae": mae,
+        "rmse": rmse,
+        "mape": mape,
+        "predictions": preds,
+        "true": y_true,
+    }
+
+
 
 
