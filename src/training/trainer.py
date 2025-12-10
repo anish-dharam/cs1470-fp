@@ -96,7 +96,7 @@ class Trainer:
             # Early stopping to prevent overfitting
             EarlyStopping(
                 monitor='val_loss',
-                patience=8,
+                patience=15,
                 restore_best_weights=True,
                 verbose=1
             ),
@@ -112,7 +112,7 @@ class Trainer:
             ReduceLROnPlateau(
                 monitor='val_loss',
                 factor=0.3,
-                patience=4,
+                patience=6,
                 min_lr=1e-7,
                 verbose=1
             )

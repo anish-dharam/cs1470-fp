@@ -9,29 +9,29 @@ IMAGE_CHANNELS = 3  # RGB
 
 # Data parameters
 NUM_WEATHER_FEATURES = 0  # no separate weather tabular features in current dataset
-NUM_PRICE_FEATURES = 8  # price, OHLC, volume, change pct, MA5, MA20
+NUM_PRICE_FEATURES = 7  # price, OHLC, change pct, MA5, MA20
 FORECAST_HORIZON = 20  # predict 20 trading days ahead
 
 # Training parameters
-BATCH_SIZE = 4
-LEARNING_RATE = 0.0002
+BATCH_SIZE = 16
+LEARNING_RATE = 0.001
 EPOCHS = 120
 VALIDATION_SPLIT = 0.15
 TEST_SPLIT = 0.15
-WEIGHT_DECAY = 1e-4
+WEIGHT_DECAY = 5e-5
 
 # Model architecture (tunable hyperparameters)
-CNN_FILTERS = [32, 64, 96]
+CNN_FILTERS = [64, 128, 192]
 CNN_KERNEL_SIZE = 3
 CNN_USE_BN = True
-CNN_DROPOUT = 0.25
+CNN_DROPOUT = 0.2
 CNN_POOL = "max"  # max or avg
 CNN_EXTRA_BLOCKS = 0  # extra conv block after main stack
 
-DENSE_UNITS = [128, 64]
-DENSE_DROPOUT = 0.3
-FUSION_UNITS = [128, 64]
-FUSION_DROPOUT = 0.3
+DENSE_UNITS = [256, 128]
+DENSE_DROPOUT = 0.25
+FUSION_UNITS = [256, 128, 64]
+FUSION_DROPOUT = 0.25
 
 # Paths
 MODEL_SAVE_PATH = "models/wheat_futures_model.h5"

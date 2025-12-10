@@ -5,8 +5,8 @@ Data preprocessing utilities for images and tabular data.
 from datetime import datetime
 
 import numpy as np
-import tensorflow as tf
 import pandas as pd
+import tensorflow as tf
 from sklearn.preprocessing import StandardScaler
 
 
@@ -47,6 +47,9 @@ def clean_wheat_csv(csv_path):
     df['Date'] = pd.to_datetime(df['Date'], format="%Y_%m_%d")
 
     numeric_cols = [c for c in df.columns if c != 'Date']
+    if 'Change %' in numeric_cols:
+        df['ChangePct'] = df['Change %'].str.replace('%', '').astype(float)
+        numeric_cols.remove('Change %')
     df[numeric_cols] = df[numeric_cols].astype(np.float32)
 
     df = df.sort_values('Date').reset_index(drop=True)

@@ -2,7 +2,11 @@
 Evaluation metrics for the wheat futures forecasting model.
 """
 
+from datetime import datetime, timedelta
+from typing import Optional
+
 import numpy as np
+import pandas as pd
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -147,12 +151,147 @@ def evaluate_model(model, X_test, y_test, prices_test=None, threshold=0.5):
     return metrics
 
 
-def evaluate_regression(model, X_test, y_test, target_scaler=None):
+def _best_exit_price(
+    price_df: pd.DataFrame,
+    anchor_date: datetime,
+    horizon_days: int,
+    trade_direction: int,  # 1 for long, -1 for short
+) -> Optional[float]:
+    """
+    Find the best exit price on exactly the target day (horizon_days after anchor_date).
+    Uses the entire price range available on that day (open, high, low, close).
+    
+    For long positions: uses High price (best exit for long)
+    For short positions: uses Low price (best exit for short)
+    Falls back to Price column if High/Low not available.
+    """
+    target_date = anchor_date + timedelta(days=horizon_days)
+    
+    # Find prices on exactly the target day
+    target_rows = price_df[price_df["Date"] == target_date]
+    if target_rows.empty:
+        return None
+    
+    # Get the row for the target day (should be only one)
+    target_row = target_rows.iloc[0]
+    
+    # Select best price based on trade direction
+    if trade_direction == 1:  # Long position - want highest price
+        # Try High, then Price, then Open as fallback
+        if "High" in price_df.columns and pd.notna(target_row.get("High")):
+            return float(target_row["High"])
+        elif "Price" in price_df.columns and pd.notna(target_row.get("Price")):
+            return float(target_row["Price"])
+        elif "Open" in price_df.columns and pd.notna(target_row.get("Open")):
+            return float(target_row["Open"])
+        else:
+            return None
+    else:  # Short position - want lowest price
+        # Try Low, then Price, then Open as fallback
+        if "Low" in price_df.columns and pd.notna(target_row.get("Low")):
+            return float(target_row["Low"])
+        elif "Price" in price_df.columns and pd.notna(target_row.get("Price")):
+            return float(target_row["Price"])
+        elif "Open" in price_df.columns and pd.notna(target_row.get("Open")):
+            return float(target_row["Open"])
+        else:
+            return None
+
+
+def calculate_regression_pnl(
+    current_prices,
+    predicted_prices,
+    actual_future_prices,
+    initial_capital=10000,
+    image_dates=None,
+    price_df=None,
+    horizon_days=20,
+    use_flexible_exit=False,
+):
+    """
+    Calculate profit and loss based on regression price predictions.
+    
+    Strategy: If predicted price > current price, go long (buy).
+              If predicted price < current price, go short (sell).
+    
+    Args:
+        current_prices: Array of current prices at prediction time
+        predicted_prices: Array of predicted future prices
+        actual_future_prices: Array of actual future prices (used if use_flexible_exit=False)
+        initial_capital: Initial capital for trading
+        image_dates: Optional array of image dates (required if use_flexible_exit=True)
+        price_df: Optional price dataframe (required if use_flexible_exit=True)
+        horizon_days: Target forecast horizon (default 20)
+        use_flexible_exit: If True, use same-day flexible exit (target day, best price from that day's range)
+    
+    Returns:
+        Cumulative PNL array and final PNL
+    """
+    pnl = []
+    capital = initial_capital
+    
+    for i in range(len(current_prices)):
+        current_price = current_prices[i]
+        predicted_price = predicted_prices[i]
+        
+        # Determine trade direction
+        if predicted_price > current_price:
+            trade_direction = 1  # Go long
+        else:
+            trade_direction = -1  # Go short
+        
+        # Get exit price
+        if use_flexible_exit and image_dates is not None and price_df is not None:
+            # Use same-day flexible exit (target day, best price from that day's range)
+            exit_price = _best_exit_price(
+                price_df, image_dates[i], horizon_days, trade_direction
+            )
+            if exit_price is None:
+                # Fallback to provided actual future price
+                exit_price = actual_future_prices[i]
+        else:
+            # Use provided actual future price
+            exit_price = actual_future_prices[i]
+        
+        # Execute trade
+        if trade_direction == 1:  # Long
+            capital = capital * (exit_price / current_price)
+        else:  # Short
+            capital = capital * (current_price / exit_price)
+        
+        pnl.append(capital - initial_capital)
+    
+    final_pnl = pnl[-1] if len(pnl) > 0 else 0
+    return np.array(pnl), final_pnl
+
+
+def evaluate_regression(
+    model,
+    X_test,
+    y_test,
+    target_scaler=None,
+    tabular_scaler=None,
+    image_dates=None,
+    price_df=None,
+    horizon_days=20,
+    use_flexible_exit=True,
+):
     """
     Evaluate regression performance (price prediction).
 
+    Args:
+        model: Trained model
+        X_test: Test data dict with 'images' and 'tabular' keys
+        y_test: Test target values (may be scaled)
+        target_scaler: Optional scaler for target values
+        tabular_scaler: Optional scaler for tabular features (needed for PNL calculation)
+        image_dates: Optional array of image dates (needed for flexible exit PNL)
+        price_df: Optional price dataframe (needed for flexible exit PNL)
+        horizon_days: Target forecast horizon (default 20)
+        use_flexible_exit: If True, use same-day flexible exit (target day, best price from that day's range) (default True)
+
     Returns:
-        dict with mae, rmse, mape, predictions
+        dict with mae, rmse, mape, predictions, pnl_history, final_pnl, profit_pct
     """
     preds = model.predict([X_test['images'], X_test['tabular']], verbose=0).flatten()
     y_true = y_test
@@ -162,8 +301,46 @@ def evaluate_regression(model, X_test, y_test, target_scaler=None):
         y_true = target_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
 
     mae = mean_absolute_error(y_true, preds)
-    rmse = mean_squared_error(y_true, preds, squared=False)
+    rmse = np.sqrt(mean_squared_error(y_true, preds))
     mape = np.mean(np.abs((y_true - preds) / np.clip(np.abs(y_true), 1e-6, None))) * 100
+
+    # Calculate PNL using current prices from tabular features
+    # Price is the first column in PRICE_FEATURE_COLUMNS
+    current_prices_scaled = X_test['tabular'][:, 0]
+    
+    # Unscale current prices if tabular scaler is provided
+    if tabular_scaler is not None:
+        # Create a dummy array with all features, unscale, then extract price column
+        # We need to unscale just the price column (index 0)
+        # Create a full feature array with zeros, set price column, unscale, extract
+        dummy_features = np.zeros((len(current_prices_scaled), X_test['tabular'].shape[1]))
+        dummy_features[:, 0] = current_prices_scaled
+        dummy_unscaled = tabular_scaler.inverse_transform(dummy_features)
+        current_prices = dummy_unscaled[:, 0]
+    else:
+        # Assume prices are already in original scale
+        current_prices = current_prices_scaled
+    
+    # Determine if we can use flexible exit
+    can_use_flexible = (
+        use_flexible_exit
+        and image_dates is not None
+        and price_df is not None
+        and len(image_dates) == len(current_prices)
+    )
+    
+    # Calculate PNL
+    pnl_history, final_pnl = calculate_regression_pnl(
+        current_prices,
+        preds,
+        y_true,
+        initial_capital=10000,
+        image_dates=image_dates if can_use_flexible else None,
+        price_df=price_df if can_use_flexible else None,
+        horizon_days=horizon_days,
+        use_flexible_exit=can_use_flexible,
+    )
+    profit_pct = (final_pnl / 10000) * 100
 
     return {
         "mae": mae,
@@ -171,6 +348,9 @@ def evaluate_regression(model, X_test, y_test, target_scaler=None):
         "mape": mape,
         "predictions": preds,
         "true": y_true,
+        "pnl_history": pnl_history,
+        "final_pnl": final_pnl,
+        "profit_pct": profit_pct,
     }
 
 

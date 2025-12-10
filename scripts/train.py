@@ -36,7 +36,7 @@ def main():
     
     # load data
     print("\n[1/4] Loading data...")
-    X_train, X_val, X_test, y_train, y_val, y_test, scaler = load_data()
+    X_train, X_val, X_test, y_train, y_val, y_test, scaler, test_dates, price_df = load_data()
 
     # scale targets for stability
     from sklearn.preprocessing import StandardScaler
@@ -83,11 +83,20 @@ def main():
     print(f"  Val RMSE  : {history.history['val_rmse'][best_idx]:.4f}")
     
     print("\nEvaluating on test set (unscaled targets)...")
-    metrics = evaluate_regression(model, X_test, y_test_scaled, target_scaler=target_scaler)
+    metrics = evaluate_regression(
+        model, X_test, y_test_scaled, 
+        target_scaler=target_scaler, 
+        tabular_scaler=scaler,
+        image_dates=test_dates,
+        price_df=price_df,
+        horizon_days=20,
+        use_flexible_exit=True
+    )
     
     print(f"  Test MAE : {metrics['mae']:.4f}")
     print(f"  Test RMSE: {metrics['rmse']:.4f}")
     print(f"  Test MAPE: {metrics['mape']:.2f}%")
+    print(f"  Profit   : ${metrics['final_pnl']:.2f} ({metrics['profit_pct']:.2f}%)")
     
     os.makedirs(RESULTS_PATH, exist_ok=True)
     
@@ -97,6 +106,11 @@ def main():
     visualize_predictions(
         y_test, metrics['predictions'],
         save_path=os.path.join(RESULTS_PATH, 'predictions.png')
+    )
+    from src.utils.visualization import plot_pnl
+    plot_pnl(
+        metrics['pnl_history'],
+        save_path=os.path.join(RESULTS_PATH, 'pnl.png')
     )
     
     print("\n" + "=" * 60)
