@@ -5,9 +5,9 @@
 #SBATCH --cpus-per-task=4       # cpu-cores per task (>1 if multi-threaded tasks)
 #SBATCH -t 02:30:00             # total run time limit (HH:MM:SS)
 #SBATCH --mem=32000MB           # INCREASED from 16GB to 32GB
-#SBATCH --job-name='Sherlock HoLLMes'
-#SBATCH --output=slurm_logs/R-%x.%j.out
-#SBATCH --error=slurm_logs/R-%x.%j.err
+#SBATCH --job-name='Wheat Futures Training'
+#SBATCH --output=slurm_logs/train-%x.%j.out
+#SBATCH --error=slurm_logs/train-%x.%j.err
 # Force unbuffered output
 export PYTHONUNBUFFERED=1
 export PYTHONIOENCODING=utf-8
@@ -56,14 +56,7 @@ cd "${SLURM_SUBMIT_DIR}" || exit 1
 echo "Working directory: $(pwd)"
 echo ""
 
-$EXEC_PATH $CONTAINER_PATH python -u main.py \
---model-type transformer \
---epochs 4 \
---learning-rate 0.0001 \
---batch-size 64 \
---seq-length 256 \
---vocab-size 10000 \
---d-model 512
+$EXEC_PATH $CONTAINER_PATH python -u scripts/train.py
 
 EXIT_CODE=$?
 
