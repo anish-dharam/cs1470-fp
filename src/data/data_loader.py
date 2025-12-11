@@ -310,9 +310,9 @@ def _to_arrays(
 
 def _split_by_year(
     samples: List[Sample],
-    train_years: Sequence[int] = tuple(range(2009, 2022)),  # 2009-2021 (13 years)
-    val_years: Sequence[int] = (2022, 2023),  # 2 years
-    test_years: Sequence[int] = (2024, 2025),  # 2 years
+    train_years: Sequence[int] = tuple(range(2015, 2024)),  # 2015-2023 (9 years)
+    val_years: Sequence[int] = (2024,),  # 1 year
+    test_years: Sequence[int] = (2025,),  # 1 year
 ):
     train = [s for s in samples if s.date.year in train_years]
     val = [s for s in samples if s.date.year in val_years]
@@ -325,9 +325,9 @@ def load_data(
     image_dir: Path = DEFAULT_IMAGE_DIR,
     horizon_days: int = FORECAST_HORIZON,
     feature_cols: Sequence[str] = PRICE_FEATURE_COLUMNS,
-    train_years: Sequence[int] = tuple(range(2009, 2022)),  # 2009-2021 (13 years)
-    val_years: Sequence[int] = (2022, 2023),  # 2 years
-    test_years: Sequence[int] = (2024, 2025),  # 2 years
+    train_years: Sequence[int] = tuple(range(2015, 2024)),  # 2015-2023 (9 years)
+    val_years: Sequence[int] = (2024,),  # 1 year
+    test_years: Sequence[int] = (2025,),  # 1 year
     tabular_scaler: Optional[StandardScaler] = None,
 ) -> Tuple[
     Dict[str, np.ndarray],

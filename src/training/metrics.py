@@ -156,44 +156,93 @@ def _best_exit_price(
     anchor_date: datetime,
     horizon_days: int,
     trade_direction: int,  # 1 for long, -1 for short
+    min_days: int = 10,
+    max_days: int = 30,
 ) -> Optional[float]:
     """
-    Find the best exit price on exactly the target day (horizon_days after anchor_date).
-    Uses the entire price range available on that day (open, high, low, close).
+    Find the best exit price, prioritizing exactly horizon_days (20 days).
+    Uses High price for long positions and Low price for short positions from day 20.
+    Falls back to flexible window [min_days, max_days] if day 20 is not available.
     
     For long positions: uses High price (best exit for long)
     For short positions: uses Low price (best exit for short)
     Falls back to Price column if High/Low not available.
+    
+    Args:
+        price_df: Price dataframe
+        anchor_date: Date to start from
+        horizon_days: Target forecast horizon (e.g., 20 days)
+        trade_direction: 1 for long, -1 for short
+        min_days: Minimum days to look ahead for fallback (default 10)
+        max_days: Maximum days to look ahead for fallback (default 30)
+    
+    Returns:
+        Best exit price from day 20 (High for long, Low for short), or from closest date
+        in [min_days, max_days] window if day 20 not available, or None if no prices found
     """
     target_date = anchor_date + timedelta(days=horizon_days)
     
-    # Find prices on exactly the target day
+    # First, try to get price from exactly day 20
     target_rows = price_df[price_df["Date"] == target_date]
-    if target_rows.empty:
+    if not target_rows.empty:
+        target_row = target_rows.iloc[0]
+        
+        # Select best price based on trade direction from day 20
+        if trade_direction == 1:  # Long position - want highest price
+            # Try High, then Price, then Open as fallback
+            if "High" in price_df.columns and pd.notna(target_row.get("High")):
+                return float(target_row["High"])
+            elif "Price" in price_df.columns and pd.notna(target_row.get("Price")):
+                return float(target_row["Price"])
+            elif "Open" in price_df.columns and pd.notna(target_row.get("Open")):
+                return float(target_row["Open"])
+        else:  # Short position - want lowest price
+            # Try Low, then Price, then Open as fallback
+            if "Low" in price_df.columns and pd.notna(target_row.get("Low")):
+                return float(target_row["Low"])
+            elif "Price" in price_df.columns and pd.notna(target_row.get("Price")):
+                return float(target_row["Price"])
+            elif "Open" in price_df.columns and pd.notna(target_row.get("Open")):
+                return float(target_row["Open"])
+    
+    # Fallback: if day 20 not available, use flexible window [min_days, max_days]
+    min_target_date = anchor_date + timedelta(days=min_days)
+    max_target_date = anchor_date + timedelta(days=max_days)
+    
+    future_rows = price_df[
+        (price_df["Date"] >= min_target_date) & (price_df["Date"] <= max_target_date)
+    ]
+    if future_rows.empty:
         return None
     
-    # Get the row for the target day (should be only one)
-    target_row = target_rows.iloc[0]
+    # Calculate distance from target horizon for each available date
+    future_rows = future_rows.copy()
+    future_rows["days_from_target"] = (
+        (future_rows["Date"] - target_date).dt.total_seconds() / 86400
+    ).abs()
+    
+    # Sort by distance from target horizon and pick the closest
+    closest_row = future_rows.loc[future_rows["days_from_target"].idxmin()]
     
     # Select best price based on trade direction
     if trade_direction == 1:  # Long position - want highest price
         # Try High, then Price, then Open as fallback
-        if "High" in price_df.columns and pd.notna(target_row.get("High")):
-            return float(target_row["High"])
-        elif "Price" in price_df.columns and pd.notna(target_row.get("Price")):
-            return float(target_row["Price"])
-        elif "Open" in price_df.columns and pd.notna(target_row.get("Open")):
-            return float(target_row["Open"])
+        if "High" in price_df.columns and pd.notna(closest_row.get("High")):
+            return float(closest_row["High"])
+        elif "Price" in price_df.columns and pd.notna(closest_row.get("Price")):
+            return float(closest_row["Price"])
+        elif "Open" in price_df.columns and pd.notna(closest_row.get("Open")):
+            return float(closest_row["Open"])
         else:
             return None
     else:  # Short position - want lowest price
         # Try Low, then Price, then Open as fallback
-        if "Low" in price_df.columns and pd.notna(target_row.get("Low")):
-            return float(target_row["Low"])
-        elif "Price" in price_df.columns and pd.notna(target_row.get("Price")):
-            return float(target_row["Price"])
-        elif "Open" in price_df.columns and pd.notna(target_row.get("Open")):
-            return float(target_row["Open"])
+        if "Low" in price_df.columns and pd.notna(closest_row.get("Low")):
+            return float(closest_row["Low"])
+        elif "Price" in price_df.columns and pd.notna(closest_row.get("Price")):
+            return float(closest_row["Price"])
+        elif "Open" in price_df.columns and pd.notna(closest_row.get("Open")):
+            return float(closest_row["Open"])
         else:
             return None
 
@@ -222,7 +271,9 @@ def calculate_regression_pnl(
         image_dates: Optional array of image dates (required if use_flexible_exit=True)
         price_df: Optional price dataframe (required if use_flexible_exit=True)
         horizon_days: Target forecast horizon (default 20)
-        use_flexible_exit: If True, use same-day flexible exit (target day, best price from that day's range)
+        use_flexible_exit: If True, uses High/Low from exactly day 20 (High for long,
+                          Low for short), falling back to flexible window [10, 30] days
+                          if day 20 is not available
     
     Returns:
         Cumulative PNL array and final PNL
@@ -242,7 +293,7 @@ def calculate_regression_pnl(
         
         # Get exit price
         if use_flexible_exit and image_dates is not None and price_df is not None:
-            # Use same-day flexible exit (target day, best price from that day's range)
+            # Use High/Low from exactly day 20 (High for long, Low for short),
             exit_price = _best_exit_price(
                 price_df, image_dates[i], horizon_days, trade_direction
             )
@@ -288,7 +339,9 @@ def evaluate_regression(
         image_dates: Optional array of image dates (needed for flexible exit PNL)
         price_df: Optional price dataframe (needed for flexible exit PNL)
         horizon_days: Target forecast horizon (default 20)
-        use_flexible_exit: If True, use same-day flexible exit (target day, best price from that day's range) (default True)
+        use_flexible_exit: If True, uses High/Low from exactly day 20 (High for long,
+                          Low for short), falling back to flexible window [10, 30] days
+                          if day 20 is not available (default True)
 
     Returns:
         dict with mae, rmse, mape, predictions, pnl_history, final_pnl, profit_pct
